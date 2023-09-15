@@ -53,7 +53,7 @@ jobs:
         run: go install github.com/google/go-licenses@latest
 
       - name: Run Check
-        run: $HOME/go/bin/go-licenses check . --allowed_licenses Apache-2.0,MIT
+        run: $HOME/go/bin/go-licenses check . --allowed_licenses Apache-2.0,MIT,BSD-3-Clause
         shell: bash
 
   govulncheck:
