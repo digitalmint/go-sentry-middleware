@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"github.com/getsentry/sentry-go"
-	"github.com/digitalmint/go-sentry-middleware"
+	mdlwrsentry "github.com/digitalmint/go-sentry-middleware"
 	"go.uber.org/zap"
 )
 
