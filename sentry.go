@@ -94,21 +94,21 @@ func (lsf LogSentrySendFailures) RoundTrip(req *http.Request) (*http.Response, e
 			if err := json.Unmarshal(body, &event); err != nil {
 				lsf.Logger.Errorw("Sentry event send failure: error recovering request json", "status", statusCode, "error", err)
 			}
-			var rsp string
+			var rspBodyStr string
 			if resp != nil {
 				var bufRsp bytes.Buffer
 				teeRsp := io.TeeReader(resp.Body, &bufRsp)
 				defer resp.Body.Close()
 				resp.Body = io.NopCloser(&bufRsp)
 				rspBody, err := io.ReadAll(teeRsp)
-				if err == nil {
+				if err != nil {
 					lsf.Logger.Errorw("Sentry event send failure: error reading response body", "status", statusCode, "error", err)
 				} else {
-					rsp = string(rspBody)
+					rspBodyStr = string(rspBody)
 				}
 			}
 
-			lsf.Logger.Errorw("Sentry event", "status", statusCode, "Exception", event.Exception, "response", rsp)
+			lsf.Logger.Errorw("Sentry event", "status", statusCode, "Exception", event.Exception, "response", rspBodyStr)
 		}
 	}
 	return resp, err
