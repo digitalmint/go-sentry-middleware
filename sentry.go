@@ -74,13 +74,14 @@ func (lsf LogSentrySendFailures) RoundTrip(req *http.Request) (*http.Response, e
 		return lsf.RT.RoundTrip(req)
 	}
 
-	// copy the body
+	// copy the request body
 	var buf bytes.Buffer
 	tee := io.TeeReader(req.Body, &buf)
 	defer req.Body.Close()
+	req.Body = io.NopCloser(tee)
+	resp, err := lsf.RT.RoundTrip(req)
 	req.Body = io.NopCloser(&buf)
 
-	resp, err := lsf.RT.RoundTrip(req)
 	var statusCode int
 	if resp != nil {
 		statusCode = resp.StatusCode
@@ -96,6 +97,7 @@ func (lsf LogSentrySendFailures) RoundTrip(req *http.Request) (*http.Response, e
 			}
 			var rspBodyStr string
 			if resp != nil {
+				// copy the response body
 				var bufRsp bytes.Buffer
 				teeRsp := io.TeeReader(resp.Body, &bufRsp)
 				defer resp.Body.Close()
