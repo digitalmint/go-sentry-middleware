@@ -69,6 +69,14 @@ type LogSentrySendFailures struct {
 	Logger *zap.SugaredLogger
 }
 
+func RedactDSN(body []byte) []byte {
+	re, err := regexp.Compile(`[^ '"]+sentry.io/[^ '"]+`)
+	if err != nil {
+		panic(err)
+	}
+	return re.ReplaceAll(body, []byte("REDACTED"))
+}
+
 func (lsf LogSentrySendFailures) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Body == nil {
 		return lsf.RT.RoundTrip(req)
@@ -93,7 +101,12 @@ func (lsf LogSentrySendFailures) RoundTrip(req *http.Request) (*http.Response, e
 		} else {
 			event := sentry.Event{}
 			if err := json.Unmarshal(body, &event); err != nil {
-				lsf.Logger.Errorw("Sentry event send failure: error recovering request json", "status", statusCode, "error", err, "request", string(body))
+				lsf.Logger.Errorw(
+					"Sentry event send failure: error recovering request json",
+					"status", statusCode,
+					"error", err,
+					"request", string(RedactDSN(body)),
+				)
 			}
 			var rspBodyStr string
 			if resp != nil {
@@ -104,13 +117,22 @@ func (lsf LogSentrySendFailures) RoundTrip(req *http.Request) (*http.Response, e
 				resp.Body = io.NopCloser(&bufRsp)
 				rspBody, err := io.ReadAll(teeRsp)
 				if err != nil {
-					lsf.Logger.Errorw("Sentry event send failure: error reading response body", "status", statusCode, "error", err)
+					lsf.Logger.Errorw(
+						"Sentry event send failure: error reading response body",
+						"status", statusCode,
+						"error", err,
+					)
 				} else {
-					rspBodyStr = string(rspBody)
+					rspBodyStr = string(RedactDSN(rspBody))
 				}
 			}
 
-			lsf.Logger.Errorw("Sentry event", "status", statusCode, "Exception", event.Exception, "response", rspBodyStr)
+			lsf.Logger.Errorw(
+				"Sentry event",
+				"status", statusCode,
+				"Exception", event.Exception,
+				"response", rspBodyStr,
+			)
 		}
 	}
 	return resp, err
