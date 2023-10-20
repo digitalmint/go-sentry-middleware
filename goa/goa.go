@@ -1,19 +1,20 @@
 package mdlwrsentrygoa
 
 import (
+	"context"
 	"net/http"
 
-	"github.com/getsentry/sentry-go"
 	mdlwrsentry "github.com/digitalmint/go-sentry-middleware"
-	"go.uber.org/zap"
+	"github.com/getsentry/sentry-go"
 )
 
 type Sentry500Options struct {
+	ExtractContext    func(context.Context, *sentry.Scope)
 	NoLogResponseBody bool
 }
 
 // MiddlewareSentry500 is a Goa middleware that captures the response status code and sends to Sentry if code=500.
-func MiddlewareSentry500(opts Sentry500Options, logger *zap.SugaredLogger) func(http.Handler) http.Handler {
+func MiddlewareSentry500(opts Sentry500Options) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Create a custom response writer to capture the status code
@@ -25,20 +26,21 @@ func MiddlewareSentry500(opts Sentry500Options, logger *zap.SugaredLogger) func(
 			// Retrieve the captured response status code
 			respStatus := captureWriter.statusCode
 			if respStatus == 500 {
-				hubOrig := sentry.GetHubFromContext(r.Context())
+				ctx := r.Context()
+				hubOrig := sentry.GetHubFromContext(ctx)
 				if hubOrig == nil {
 					hubOrig = sentry.CurrentHub().Clone()
 				}
-				hub := mdlwrsentry.HubCustomFingerprint(hubOrig)
+				hub := mdlwrsentry.HubCustomFingerprint(hubOrig, mdlwrsentry.DefaultFingerprintErrorHandler)
 				hub.Scope().SetRequest(r)
 				urlStr := ""
 				if url := r.URL; url != nil {
 					urlStr = url.String()
 				}
 
-				/*if opts.ExtractContext != nil {
+				if opts.ExtractContext != nil {
 					opts.ExtractContext(ctx, hub.Scope())
-				}*/
+				}
 
 				err500 := mdlwrsentry.SentryError500{
 					Url:  urlStr,

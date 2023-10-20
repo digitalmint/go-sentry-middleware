@@ -2,15 +2,17 @@ package sentry
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 
 	"github.com/getsentry/sentry-go"
-	"go.uber.org/zap"
 )
 
 type SentryError500 struct {
@@ -27,7 +29,7 @@ func (e500 SentryError500) Error() string {
 // the longer the body is, the more likely it is to contain variable
 // So for now try looking at a beginning snippet of the body.
 // The URL is normalized so that any path part with a number is replaced by a placeholder value
-func SentryFingerprint(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
+func SentryFingerprint(event *sentry.Event, hint *sentry.EventHint) error {
 	if oe := hint.OriginalException; oe != nil {
 		//nolint:errorlint
 		if ex, ok := oe.(SentryError500); ok {
@@ -35,19 +37,22 @@ func SentryFingerprint(event *sentry.Event, hint *sentry.EventHint) *sentry.Even
 			if len(ex.Body) > 15 {
 				message = ex.Body[0:15]
 			}
-			newPath, err := NormalizeUrlPathForSentry(ex.Url, "")
+			u, err := url.Parse(ex.Url)
 			if err != nil {
-				zap.S().Error(err)
+				return err
 			}
-
+			newPath := NormalizeUrlPathForSentry(u, "")
 			event.Fingerprint = []string{newPath, message}
-			return event
 		}
 	}
-	return event
+	return nil
 }
 
-func HubCustomFingerprint(hub *sentry.Hub) *sentry.Hub {
+func DefaultFingerprintErrorHandler(err error) {
+	slog.Error("error during fingerprinting", "error", err)
+}
+
+func HubCustomFingerprint(hub *sentry.Hub, fingerprintErrHandler func(err error)) *sentry.Hub {
 	clientOld, scope := hub.Client(), hub.Scope()
 	options := sentry.ClientOptions{}
 	if clientOld != nil {
@@ -56,7 +61,13 @@ func HubCustomFingerprint(hub *sentry.Hub) *sentry.Hub {
 	// The stack trace is not useful for 500 errors since it just shows this middleware
 	options.AttachStacktrace = false
 	// See: https://docs.sentry.io/platforms/go/usage/sdk-fingerprinting/
-	options.BeforeSend = SentryFingerprint
+	options.BeforeSend = func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
+		err := SentryFingerprint(event, hint)
+		if err != nil {
+			fingerprintErrHandler(err)
+		}
+		return event
+	}
 	client, err := sentry.NewClient(options)
 	if err != nil {
 		return hub
@@ -65,8 +76,29 @@ func HubCustomFingerprint(hub *sentry.Hub) *sentry.Hub {
 }
 
 type LogSentrySendFailures struct {
-	RT     http.RoundTripper
-	Logger *zap.SugaredLogger
+	RT           http.RoundTripper
+	ErrorHandler func(context.Context, ErrSentryRoundTrip)
+}
+
+func NewLogSentrySendFailures(rt http.RoundTripper) LogSentrySendFailures {
+	return LogSentrySendFailures{RT: rt, ErrorHandler: SlogErrHandler}
+}
+
+func SlogErrHandler(ctx context.Context, err ErrSentryRoundTrip) {
+	attrs := make([]slog.Attr, 0, 4)
+	if err.Status != 0 {
+		attrs = append(attrs, slog.Int("status", err.Status))
+	}
+	if err.Exception != nil {
+		attrs = append(attrs, slog.String("exception", fmt.Sprintf("%v", err.Exception)))
+	}
+	if err.Request != nil {
+		attrs = append(attrs, slog.String("request", string(err.Request)))
+	}
+	if err.Response != nil {
+		attrs = append(attrs, slog.String("response", string(err.Response)))
+	}
+	slog.LogAttrs(ctx, slog.LevelError, err.Msg, attrs...)
 }
 
 func RedactDSN(body []byte) []byte {
@@ -77,10 +109,37 @@ func RedactDSN(body []byte) []byte {
 	return re.ReplaceAll(body, []byte("REDACTED"))
 }
 
+type ErrSentryRoundTrip struct {
+	Msg       string
+	Err       error
+	Status    int
+	Request   []byte
+	Exception []sentry.Exception
+	Response  []byte
+}
+
+func (esrt ErrSentryRoundTrip) Error() string {
+	var attrs string
+	if esrt.Status != 0 {
+		attrs = attrs + fmt.Sprintf(" status=%d", esrt.Status)
+	}
+	if esrt.Exception != nil {
+		attrs = attrs + fmt.Sprintf(" exception=%v", esrt.Request)
+	}
+	if esrt.Request != nil {
+		attrs = attrs + " request=" + string(esrt.Request)
+	}
+	if esrt.Response != nil {
+		attrs = attrs + " response=" + string(esrt.Response)
+	}
+	return esrt.Msg + ": " + esrt.Err.Error() + " " + attrs
+}
+
 func (lsf LogSentrySendFailures) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Body == nil {
 		return lsf.RT.RoundTrip(req)
 	}
+	ctx := req.Context()
 
 	// copy the request body
 	var buf bytes.Buffer
@@ -97,42 +156,45 @@ func (lsf LogSentrySendFailures) RoundTrip(req *http.Request) (*http.Response, e
 	if statusCode >= 400 || resp == nil {
 		body, err := io.ReadAll(tee)
 		if err != nil {
-			lsf.Logger.Errorw("Sentry event send failure: error recovering request body", "status", statusCode, "error", err)
+			lsf.ErrorHandler(ctx, ErrSentryRoundTrip{
+				Msg:    "Sentry event send failure: error recovering request body",
+				Err:    err,
+				Status: statusCode,
+			})
 		} else {
 			event := sentry.Event{}
 			if err := json.Unmarshal(body, &event); err != nil {
-				lsf.Logger.Errorw(
-					"Sentry event send failure: error recovering request json",
-					"status", statusCode,
-					"error", err,
-					"request", string(RedactDSN(body)),
-				)
+				lsf.ErrorHandler(ctx, ErrSentryRoundTrip{
+					Msg:     "Sentry event send failure: error recovering request json",
+					Err:     err,
+					Status:  statusCode,
+					Request: RedactDSN(body),
+				})
 			}
-			var rspBodyStr string
+			var rspBody []byte
 			if resp != nil {
 				// copy the response body
 				var bufRsp bytes.Buffer
 				teeRsp := io.TeeReader(resp.Body, &bufRsp)
 				defer resp.Body.Close()
 				resp.Body = io.NopCloser(&bufRsp)
-				rspBody, err := io.ReadAll(teeRsp)
+				var err error
+				rspBody, err = io.ReadAll(teeRsp)
 				if err != nil {
-					lsf.Logger.Errorw(
-						"Sentry event send failure: error reading response body",
-						"status", statusCode,
-						"error", err,
-					)
-				} else {
-					rspBodyStr = string(RedactDSN(rspBody))
+					lsf.ErrorHandler(ctx, ErrSentryRoundTrip{
+						Msg:    "Sentry event send failure: error reading response body",
+						Err:    err,
+						Status: statusCode,
+					})
 				}
 			}
 
-			lsf.Logger.Errorw(
-				"Sentry event",
-				"status", statusCode,
-				"Exception", event.Exception,
-				"response", rspBodyStr,
-			)
+			lsf.ErrorHandler(ctx, ErrSentryRoundTrip{
+				Msg:       "Sentry event",
+				Status:    statusCode,
+				Exception: event.Exception,
+				Response:  RedactDSN(rspBody),
+			})
 		}
 	}
 	return resp, err
@@ -140,32 +202,26 @@ func (lsf LogSentrySendFailures) RoundTrip(req *http.Request) (*http.Response, e
 
 // NormalizeUrlPathForSentry takes a url path string and replaces any path part that contains a number with a standard placeholder value.
 // This allows for better error grouping at Sentry for urls that may contain dynamic values (UUID for example) but are basically the same URL in general
-func NormalizeUrlPathForSentry(_url string, placeholder string) (string, error) {
+func NormalizeUrlPathForSentry(url *url.URL, placeholder string) string {
 	if placeholder == "" {
 		placeholder = "-omitted-"
 	}
-	newPath := _url
-	u, err := url.Parse(_url)
-	if err != nil {
-		return newPath, err
-	} else { // Split the URL path into individual parts
-		pathParts := strings.Split(u.Path, "/")
+	pathParts := strings.Split(url.Path, "/")
 
-		// Regular expression to match numeric parts of the path
-		numericRegex := regexp.MustCompile("[0-9]+")
+	// Regular expression to match numeric parts of the path
+	numericRegex := regexp.MustCompile("[0-9]+")
 
-		// Iterate over each part of the path
-		for i, part := range pathParts {
-			// Check if the part contains a number
-			if part != "v1" && part != "v2" && numericRegex.MatchString(part) {
-				// Replace the numeric part with "placeholder"
-				pathParts[i] = placeholder
-			}
+	// Iterate over each part of the path
+	for i, part := range pathParts {
+		// Check if the part contains a number
+		if part != "v1" && part != "v2" && numericRegex.MatchString(part) {
+			// Replace the numeric part with "placeholder"
+			pathParts[i] = placeholder
 		}
-
-		// Join the path parts back into a single string with "/"
-		newPath = strings.Join(pathParts, "/")
-		newPath = strings.TrimSuffix(newPath, "/")
 	}
-	return newPath, nil
+
+	// Join the path parts back into a single string with "/"
+	newPath := strings.Join(pathParts, "/")
+	newPath = strings.TrimSuffix(newPath, "/")
+	return newPath
 }
