@@ -3,9 +3,9 @@ package sentrygin
 import (
 	"bytes"
 
+	mdlwrsentry "github.com/digitalmint/go-sentry-middleware"
 	"github.com/getsentry/sentry-go"
 	"github.com/gin-gonic/gin"
-	mdlwrsentry "github.com/digitalmint/go-sentry-middleware"
 )
 
 type Sentry500Options struct {
@@ -27,7 +27,7 @@ func MiddlewareSentry500Opts(opts Sentry500Options) func(*gin.Context) {
 			if hubOrig == nil {
 				hubOrig = sentry.CurrentHub().Clone()
 			}
-			hub := mdlwrsentry.HubCustomFingerprint(hubOrig)
+			hub := mdlwrsentry.HubCustomFingerprint(hubOrig, mdlwrsentry.DefaultFingerprintErrorHandler)
 			hub.Scope().SetRequest(ctx.Request)
 			urlStr := ""
 			if url := ctx.Request.URL; url != nil {

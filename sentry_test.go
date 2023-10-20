@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"go.uber.org/zap"
 )
 
 func TestRedactDSN(t *testing.T) {
@@ -33,7 +31,7 @@ func TestRoundTrip(t *testing.T) {
 	client := ts.Client()
 	transport := client.Transport
 	client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		lsf := LogSentrySendFailures{Logger: zap.S(), RT: transport}
+		lsf := NewLogSentrySendFailures(transport)
 		return lsf.RoundTrip(r)
 	})
 	res, err := client.Get(ts.URL)
