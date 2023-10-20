@@ -23,9 +23,9 @@ jobs:
       - name: setup
         uses: actions/setup-go@v4
         with:
-          go-version: '>=1.21.1'
+          go-version: '>=1.21.3'
           cache: false
-          check-latest: true
+          check-latest: false
 
       - name: test
         run: go build ./... && go test ./...
@@ -48,6 +48,13 @@ jobs:
       - name: checkout
         uses: actions/checkout@v3
 
+      - name: setup
+        uses: actions/setup-go@v4
+        with:
+          go-version: '>=1.21.3'
+          cache: false
+          check-latest: false
+
       - name: Get google/go-licenses package
         shell: bash
         run: go install github.com/google/go-licenses@latest
@@ -63,6 +70,6 @@ jobs:
       - id: govulncheck
         uses: golang/govulncheck-action@v1
         with:
-           go-version-input: 1.21.1
+           go-version-input: 1.21.3
            go-package: ./...
            cache: true
