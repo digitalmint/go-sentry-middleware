@@ -11,6 +11,11 @@ import (
 type Sentry500Options struct {
 	ExtractContext    func(context.Context, *sentry.Scope)
 	NoLogResponseBody bool
+	FingerprintOpts   mdlwrsentry.FingerprintOpts
+}
+
+var DefaultSentry500Opts = Sentry500Options{
+	FingerprintOpts: mdlwrsentry.DefaultFingerprinter,
 }
 
 // MiddlewareSentry500 is a Goa middleware that captures the response status code and sends to Sentry if code=500.
@@ -31,7 +36,7 @@ func MiddlewareSentry500(opts Sentry500Options) func(http.Handler) http.Handler 
 				if hubOrig == nil {
 					hubOrig = sentry.CurrentHub().Clone()
 				}
-				hub := mdlwrsentry.HubCustomFingerprint(hubOrig, mdlwrsentry.DefaultFingerprintErrorHandler)
+				hub := mdlwrsentry.HubCustomFingerprint(hubOrig, opts.FingerprintOpts)
 				hub.Scope().SetRequest(r)
 				urlStr := ""
 				if url := r.URL; url != nil {

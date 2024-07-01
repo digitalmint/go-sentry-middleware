@@ -24,35 +24,49 @@ func (e500 SentryError500) Error() string {
 	return "500 " + e500.Url + ":" + e500.Body
 }
 
+func (e500 SentryError500) Fingerprint(_ []string) ([]string, error) {
+	message := e500.Body
+	if len(e500.Body) > 15 {
+		message = e500.Body[0:15]
+	}
+	u, err := url.Parse(e500.Url)
+	if err != nil {
+		return nil, err
+	}
+	newPath := NormalizeUrlPathForSentry(u, "")
+	return []string{newPath, message}, nil
+}
+
 // group on the url and the beginning of the body.
 // The same url can have different errors: thus looking at the response body.
 // the longer the body is, the more likely it is to contain variable
 // So for now try looking at a beginning snippet of the body.
 // The URL is normalized so that any path part with a number is replaced by a placeholder value
-func SentryFingerprint(event *sentry.Event, hint *sentry.EventHint) error {
-	if oe := hint.OriginalException; oe != nil {
-		//nolint:errorlint
-		if ex, ok := oe.(SentryError500); ok {
-			message := ex.Body
-			if len(ex.Body) > 15 {
-				message = ex.Body[0:15]
-			}
-			u, err := url.Parse(ex.Url)
-			if err != nil {
-				return err
-			}
-			newPath := NormalizeUrlPathForSentry(u, "")
-			event.Fingerprint = []string{newPath, message}
-		}
+func Fingerprint500(err error, fingerprint []string) ([]string, error) {
+	//nolint:errorlint
+	if ex, ok := err.(SentryError500); !ok {
+		return ex.Fingerprint(fingerprint)
 	}
-	return nil
+	return nil, nil
 }
 
 func DefaultFingerprintErrorHandler(err error) {
 	slog.Error("error during fingerprinting", "error", err)
 }
 
-func HubCustomFingerprint(hub *sentry.Hub, fingerprintErrHandler func(err error)) *sentry.Hub {
+type Fingerprint func(err error, fingerprint []string) ([]string, error)
+
+type FingerprintOpts struct {
+	ErrHandler     func(err error)
+	Fingerprinters []Fingerprint
+}
+
+var DefaultFingerprinter = FingerprintOpts{
+	ErrHandler:     DefaultFingerprintErrorHandler,
+	Fingerprinters: []Fingerprint{Fingerprint500},
+}
+
+func HubCustomFingerprint(hub *sentry.Hub, fingerprintOpts FingerprintOpts) *sentry.Hub {
 	clientOld, scope := hub.Client(), hub.Scope()
 	options := sentry.ClientOptions{}
 	if clientOld != nil {
@@ -62,9 +76,15 @@ func HubCustomFingerprint(hub *sentry.Hub, fingerprintErrHandler func(err error)
 	options.AttachStacktrace = false
 	// See: https://docs.sentry.io/platforms/go/usage/sdk-fingerprinting/
 	options.BeforeSend = func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
-		err := SentryFingerprint(event, hint)
-		if err != nil {
-			fingerprintErrHandler(err)
+		if oe := hint.OriginalException; oe != nil {
+			for _, fingerprinter := range fingerprintOpts.Fingerprinters {
+				fingerprint, err := fingerprinter(oe, event.Fingerprint)
+				if err != nil {
+					fingerprintOpts.ErrHandler(err)
+				} else if fingerprint != nil {
+					event.Fingerprint = fingerprint
+				}
+			}
 		}
 		return event
 	}

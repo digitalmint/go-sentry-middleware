@@ -11,10 +11,15 @@ import (
 type Sentry500Options struct {
 	ExtractContext    func(*gin.Context, *sentry.Scope)
 	NoLogResponseBody bool
+	FingerprintOpts   mdlwrsentry.FingerprintOpts
+}
+
+var DefaultSentry500Opts = Sentry500Options{
+	FingerprintOpts: mdlwrsentry.DefaultFingerprinter,
 }
 
 func MiddlewareSentry500(ctx *gin.Context) {
-	MiddlewareSentry500Opts(Sentry500Options{})(ctx)
+	MiddlewareSentry500Opts(DefaultSentry500Opts)(ctx)
 }
 
 func MiddlewareSentry500Opts(opts Sentry500Options) func(*gin.Context) {
@@ -27,7 +32,7 @@ func MiddlewareSentry500Opts(opts Sentry500Options) func(*gin.Context) {
 			if hubOrig == nil {
 				hubOrig = sentry.CurrentHub().Clone()
 			}
-			hub := mdlwrsentry.HubCustomFingerprint(hubOrig, mdlwrsentry.DefaultFingerprintErrorHandler)
+			hub := mdlwrsentry.HubCustomFingerprint(hubOrig, opts.FingerprintOpts)
 			hub.Scope().SetRequest(ctx.Request)
 			urlStr := ""
 			if url := ctx.Request.URL; url != nil {
