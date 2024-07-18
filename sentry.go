@@ -102,7 +102,7 @@ func SlogErrHandler(ctx context.Context, err ErrSentryRoundTrip) {
 }
 
 func RedactDSN(body []byte) []byte {
-	re, err := regexp.Compile(`[^ '"]+sentry.io/[^ '"]+`)
+	re, err := regexp.Compile(`[^ '"]+sentry\.io/[^ '"]+`)
 	if err != nil {
 		panic(err)
 	}
