@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -224,4 +226,84 @@ func NormalizeUrlPathForSentry(url *url.URL, placeholder string) string {
 	newPath := strings.Join(pathParts, "/")
 	newPath = strings.TrimSuffix(newPath, "/")
 	return newPath
+}
+
+type UnwrapAndFilterErrorTypeConfig struct {
+	FilterErrorTypes []string
+}
+
+// Golang error types tend to be generic wrappers
+// Unwrap known generic error types until we find an unrecognized error type
+// That error type is assumed to be useful
+// Otherwise just strip the "*errors." or "errors." prefix which adds noise
+func SentryBeforeSendUnwrapAndFilterErrorType(conf UnwrapAndFilterErrorTypeConfig) func(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
+	if len(conf.FilterErrorTypes) == 0 {
+		conf.FilterErrorTypes = defaultFilterErrorTypes
+	}
+	return conf.sentryBeforeSendUnwrapAndFilterErrorType
+}
+
+func (conf UnwrapAndFilterErrorTypeConfig) sentryBeforeSendUnwrapAndFilterErrorType(event *sentry.Event, hint *sentry.EventHint) *sentry.Event {
+	oe := hint.OriginalException
+	if oe == nil {
+		return event
+	}
+	errStr := unwrapToSpecificError(oe, conf.FilterErrorTypes)
+	exLastIndex := len(event.Exception) - 1
+	if errStr != nil && *errStr != event.Exception[exLastIndex].Type {
+		event.Exception[exLastIndex].Type = *errStr
+	}
+	return event
+}
+
+var defaultFilterErrorTypes = []string{"errors.", "fmt.wrapError"}
+
+func unwrapToSpecificError(err error, filterErrorTypes []string) *string {
+	var typStr string
+	var firstTypStr string
+	var underlying error
+	for {
+		typ := reflect.TypeOf(err)
+		if typ == nil {
+			break
+		}
+		typStr = typ.String()
+
+		var found bool
+		var after string
+		for _, prefix := range filterErrorTypes {
+			after, found = strings.CutPrefix(typStr, prefix)
+			if found {
+				typStr = after // remove the non-useful prefix
+				break
+			}
+			after, found = strings.CutPrefix(typStr, "*"+prefix)
+			if found {
+				typStr = after // remove the non-useful prefix
+				break
+			}
+		}
+
+		if firstTypStr == "" {
+			firstTypStr = typStr
+		}
+		// Look for a non-filtered error type
+		if found {
+			if underlying = errors.Unwrap(err); underlying != nil {
+				err = underlying
+				continue
+			}
+		}
+		break
+	}
+
+	if typStr == "" {
+		return nil
+	}
+
+	if underlying == nil {
+		return &firstTypStr
+	} else {
+		return &typStr
+	}
 }

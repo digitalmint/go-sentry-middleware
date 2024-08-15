@@ -1,6 +1,7 @@
 package sentry
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -47,5 +48,31 @@ func TestRoundTrip(t *testing.T) {
 
 	if string(greeting) != "Hello, client" {
 		t.Fatal("not greeted", string(greeting))
+	}
+}
+
+type testErr struct{}
+
+func (te testErr) Error() string {
+	return "test error"
+}
+
+func TestUnwrapToSpecificError(t *testing.T) {
+	d := defaultFilterErrorTypes
+	if errStr := unwrapToSpecificError(errors.New("test"), d); *errStr != "errorString" {
+		t.Errorf("unexpected %s", *errStr)
+	}
+	if errStr := unwrapToSpecificError(fmt.Errorf("test"), d); *errStr != "errorString" {
+		t.Errorf("unexpected %s", *errStr)
+	}
+	if errStr := unwrapToSpecificError(http.ErrAbortHandler, d); *errStr != "errorString" {
+		t.Errorf("unexpected %s", *errStr)
+	}
+	if errStr := unwrapToSpecificError(testErr{}, d); *errStr != "sentry.testErr" {
+		t.Errorf("unexpected %s", *errStr)
+	}
+	wrapped := fmt.Errorf("%w", testErr{})
+	if errStr := unwrapToSpecificError(wrapped, d); *errStr != "sentry.testErr" {
+		t.Errorf("unexpected %s", *errStr)
 	}
 }
