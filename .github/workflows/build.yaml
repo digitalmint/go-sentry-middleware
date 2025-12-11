@@ -23,9 +23,7 @@ jobs:
       - name: setup
         uses: actions/setup-go@v4
         with:
-          go-version: '>=1.22'
-          cache: false
-          check-latest: false
+          go-version-file: go.mod
 
       - name: test
         run: go build ./... && go test ./...
@@ -51,9 +49,7 @@ jobs:
       - name: setup
         uses: actions/setup-go@v4
         with:
-          go-version: '>=1.22'
-          cache: false
-          check-latest: false
+          go-version-file: go.mod
 
       - name: Get google/go-licenses package
         shell: bash
@@ -70,6 +66,4 @@ jobs:
       - id: govulncheck
         uses: golang/govulncheck-action@v1
         with:
-           go-version-input: 1.22
-           go-package: ./...
-           cache: true
+           go-version-file: go.mod
