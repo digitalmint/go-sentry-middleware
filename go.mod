@@ -2,7 +2,6 @@ module github.com/digitalmint/go-sentry-middleware
 
 go 1.24.11
 
-toolchain go1.24.1
 
 require (
 	github.com/getsentry/sentry-go v0.40.0
